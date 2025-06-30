@@ -1,0 +1,7 @@
+# Ignore Python cache and environment files
+__pycache__/
+*.pyc
+.env
+Bondly_AI_Chat_Assistant_Developer_HandOff
+api_test.py
+
