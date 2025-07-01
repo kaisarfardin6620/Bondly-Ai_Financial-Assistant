@@ -104,25 +104,20 @@ def build_system_prompt(first_name: str, partner_names: str, relationship_status
 # --- Micro-consent handling ---
 def check_micro_consent(user_input: str, user_data: Dict, intent: str) -> Tuple[bool, Optional[str]]:
     """Checks for user consent before providing advice on sensitive topics."""
-    # Define which intents are considered sensitive
     sensitive_intents = ['investment_guidance', 'debt_paydown']
 
-    # If the intent is not considered sensitive, proceed without asking for consent
     if intent not in sensitive_intents:
         return True, None
 
-    # Initialize 'granted_consents' entry if missing
     if intent not in user_data.get("granted_consents", {}):
         user_data.setdefault("granted_consents", {})[intent] = False
 
-    # If consent not yet granted, check if the user input expresses approval
     if not user_data["granted_consents"][intent]:
         if re.search(r'\b(yes|sure|please|ok|okay|go ahead|yep)\b', user_input.lower()):
             user_data["granted_consents"][intent] = True
             return True, None
         return False, f"Before I provide advice on {intent.replace('_', ' ')}, would you like me to proceed with suggestions?"
 
-    # Consent already granted
     return True, None
 
 # --- Conflict empathy message generator ---
@@ -130,136 +125,155 @@ def get_conflict_empathy() -> str:
     """Returns a random empathy message for conflict situations."""
     return random.choice(CONFLICT_SCRIPTS)
 
-# --- Pronoun replacement with regex for accuracy ---
+# --- Pronoun replacement with improved context awareness ---
 def adjust_pronouns(text: str, relationship_status: str) -> str:
-    """Adjusts pronouns for couples or individuals, avoiding double replacements and awkward phrasing."""
+    """Adjusts pronouns for couples or individuals, avoiding awkward phrasing and double replacements."""
     if not text or relationship_status != "partnered":
         return text
-    # Replace only standalone 'you', 'your', 'yourselves' not already followed by 'both', 'shared', 'together'
-    text = re.sub(r'\byou\b(?! both)', 'you both', text, flags=re.IGNORECASE)
-    text = re.sub(r'\byour\b(?! shared)', 'your shared', text, flags=re.IGNORECASE)
+    # Avoid replacing if already 'you both', 'your shared', etc.
+    def replace_you(match):
+        word = match.group(0)
+        # Only replace standalone 'you' not followed by 'both'
+        if re.match(r'you(?! both)', word, re.IGNORECASE):
+            return re.sub(r'you', 'you both', word, flags=re.IGNORECASE)
+        return word
+    def replace_your(match):
+        word = match.group(0)
+        if re.match(r'your(?! shared)', word, re.IGNORECASE):
+            return re.sub(r'your', 'your shared', word, flags=re.IGNORECASE)
+        return word
+    # Use word boundaries and avoid double replacements
+    text = re.sub(r'\byou\b(?! both)', replace_you, text, flags=re.IGNORECASE)
+    text = re.sub(r'\byour\b(?! shared)', replace_your, text, flags=re.IGNORECASE)
     text = re.sub(r'\byourselves\b(?! together)', 'yourselves together', text, flags=re.IGNORECASE)
-    # Remove accidental double replacements like 'you both both', 'your shared shared', etc.
-    text = re.sub(r'\b(you both) both\b', 'you both', text, flags=re.IGNORECASE)
-    text = re.sub(r'\b(your shared) shared\b', 'your shared', text, flags=re.IGNORECASE)
-    text = re.sub(r'\b(yourselves together) together\b', 'yourselves together', text, flags=re.IGNORECASE)
-    # Remove awkward "you both're both" or similar
-    text = re.sub(r"you both('re|’re) both", r"you both\1", text, flags=re.IGNORECASE)
+    # Remove accidental doubles
+    text = re.sub(r'\byou both both\b', 'you both', text, flags=re.IGNORECASE)
+    text = re.sub(r'\byour shared shared\b', 'your shared', text, flags=re.IGNORECASE)
+    text = re.sub(r'\byourselves together together\b', 'yourselves together', text, flags=re.IGNORECASE)
+    text = re.sub(r"you both('re|’re) both", r"you both\\1", text, flags=re.IGNORECASE)
     return text
 
-# --- Milestone celebration (only once) ---
+# --- Milestone celebration (only once per month) ---
 def check_milestones(user_data: Dict) -> Optional[str]:
-    """Checks and celebrates financial milestones."""
+    """Checks and celebrates financial milestones. Budget milestone only once per month."""
     total_saved = sum(goal.get("saved_amount", 0) for goal in user_data.get("financial_goals", []))
     if total_saved > 50000 and not user_data.get("milestone_celebrated", False):
         user_data["milestone_celebrated"] = True
         return f"Congratulations! You've saved over ${total_saved} towards your goals. Keep up the great work!"
-    if user_data.get("budget_diff", 0) > 0:
-        return "Nice job on staying under budget this month!"
+    # Budget milestone: only if under budget, and only once per month
+    from datetime import datetime
+    current_month = datetime.now().strftime("%Y-%m")
+    last_celebrated = user_data.get("budget_milestone_last_month")
+    if user_data.get("budget_diff", 0) < 0 and last_celebrated != current_month:
+        user_data["budget_milestone_last_month"] = current_month
+        return "Great job! You've managed to spend less than your budget this month. This positive habit will help your financial health!"
     return None
 
-# --- Legal disclaimer based on intent ---
+# --- Legal disclaimer for specific intents ---
 def get_legal_disclaimer(intent: str) -> Optional[str]:
-    """Returns a legal disclaimer for specific intents."""
-    if intent in ['investment_guidance', 'debt_paydown']:
-        return "Disclaimer: I provide general educational information only. Please consult licensed financial or tax professionals for personalized advice."
+    """Returns legal disclaimer if necessary."""
+    if intent in ("investment_guidance", "debt_paydown"):
+        return "Note: I am not a licensed financial advisor. Please consult a professional for personalized advice."
     return None
 
-# --- Prune conversation history to last MAX_HISTORY_LENGTH messages ---
-def prune_conversation_history(history: List[Dict]) -> List[Dict]:
-    """Limits conversation history to MAX_HISTORY_LENGTH."""
-    return history[-MAX_HISTORY_LENGTH:] if len(history) > MAX_HISTORY_LENGTH else history
+# --- Prune conversation history to maintain context window ---
+def prune_conversation_history(messages: List[Dict], max_length: int = MAX_HISTORY_LENGTH) -> List[Dict]:
+    """Prunes the conversation history to the most recent messages."""
+    if len(messages) > max_length:
+        return messages[-max_length:]
+    return messages
 
-# --- Input sanitization ---
-def sanitize_input(user_input: str) -> str:
-    """Sanitizes user input to remove dangerous characters."""
-    return re.sub(r'[<>;]', '', user_input)
+# --- Main function to generate response ---
+def get_bondly_response(user_input: str, user_data: Dict, messages: List[Dict]) -> Tuple[str, List[Dict]]:
+    """
+    Given the user input, user data, and conversation history messages,
+    returns the assistant's response and updated messages list.
+    """
+    # Detect intent and mood
+    intent = detect_intent(user_input)
+    mood = detect_mood(user_input, user_data)
 
-# --- OpenAI Chat Completion call with retries and streaming, with response caching ---
-@lru_cache(maxsize=1000)
-def call_openai_chat(messages: tuple) -> str:
-    """Calls OpenAI API with retries and caching."""
-    messages_list = [{"role": msg[0], "content": msg[1]} for msg in messages]
-    logger.info("Calling OpenAI API with %d messages", len(messages_list))
-    retries = 0
-    response_text = ""
-    while retries < MAX_RETRIES:
+    # Micro-consent check
+    consent_ok, consent_msg = check_micro_consent(user_input, user_data, intent)
+    if not consent_ok:
+        messages.append({"role": "assistant", "content": consent_msg})
+        return consent_msg, messages
+
+    # Update messages with user input
+    messages.append({"role": "user", "content": user_input})
+
+    # Build system prompt (cache key: tuple of immutable types)
+    goals_tuple = tuple(
+        (goal["type"], goal["target_amount"], goal["target_date"], goal.get("saved_amount", 0))
+        for goal in user_data.get("financial_goals", [])
+    )
+    conflict_patterns_str = ','.join(user_data.get("conflict_patterns", [])) if user_data.get("conflict_patterns") else ""
+    system_prompt = build_system_prompt(
+        first_name=user_data.get("first_name", "User"),
+        partner_names=user_data.get("partner_names", ""),
+        relationship_status=user_data.get("relationship_status", "single"),
+        tone_preference=mood,
+        goals_tuple=goals_tuple,
+        mood=mood,
+        money_personality=user_data.get("money_personality", "balanced"),
+        risk_profile=user_data.get("risk_profile", "moderate"),
+        investment_timeline=user_data.get("investment_timeline", "long-term"),
+        conflict_patterns=conflict_patterns_str
+    )
+
+    # Compose messages for the API
+    chat_messages = [{"role": "system", "content": system_prompt}] + messages
+
+    # Call OpenAI Chat Completion with retry
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=messages_list,
-                stream=True
+                messages=chat_messages,
+                max_tokens=300,
+                temperature=0.75,
+                top_p=0.9,
+                frequency_penalty=0.2,
+                presence_penalty=0.1,
+                stop=None
             )
-            for chunk in response:
-                chunk_message = getattr(chunk.choices[0].delta, "content", "") or ""
-                response_text += chunk_message
-            logger.info("OpenAI API call successful")
-            return response_text or "Sorry, I couldn't generate a response. Please try again."
+            break
         except APIError as e:
-            retries += 1
-            logger.error(f"OpenAI API error (retry {retries}/{MAX_RETRIES}): {str(e)}")
-            time.sleep(2 * (2 ** retries))  # Exponential backoff
-        except Exception as e:
-            logger.error(f"Unexpected error: {str(e)}")
-            return "Sorry, something went wrong. Please try again later."
-    return "Sorry, I'm having trouble processing your request right now. Please try again later."
+            logger.error(f"OpenAI API error on attempt {attempt}: {e}")
+            if attempt == MAX_RETRIES:
+                return "Sorry, I'm having trouble connecting right now. Please try again later.", messages
+            time.sleep(2 ** attempt)  # exponential backoff
 
-# --- Main Bondly response function ---
-def get_bondly_response(user_input: str, user_data: Dict, conversation_history: List[Dict], is_audio: bool = False) -> Tuple[str, List[Dict]]:
-    """
-    Processes user input and returns Bondly's response with updated conversation history.
+    response_text = response.choices[0].message.content.strip()
 
-    Args:
-        user_input (str): User's input message.
-        user_data (Dict): User context (first_name, relationship_status, etc.).
-        conversation_history (List[Dict]): Conversation history.
-        is_audio (bool): Whether input is from audio transcription.
+    # Add conflict empathy only if current input or intent is conflict/emotion related
+    conflict_intents = ["emotional_encouragement"]
+    conflict_keywords = ["argue", "fight", "disagree", "conflict", "stress", "frustrate", "upset", "stressed", "anxious", "overwhelmed"]
+    if (
+        (intent in conflict_intents or any(word in user_input.lower() for word in conflict_keywords))
+        and user_data.get("conflict_patterns")
+        and not any(phrase in response_text for phrase in CONFLICT_SCRIPTS)
+    ):
+        empathy_msg = get_conflict_empathy()
+        response_text = f"{empathy_msg}\n\n{response_text}"
 
-    Returns:
-        Tuple[str, List[Dict]]: AI response and updated conversation history.
-    """
-    user_input = sanitize_input(user_input)
-    messages = prune_conversation_history(conversation_history)
-    intent = detect_intent(user_input)
-    mood = detect_mood(user_input, user_data)
-    user_data["mood"] = mood
-    
-    if not messages or messages[0]["role"] != "system":
-        goals_tuple = tuple((g["type"], g["target_amount"], g["target_date"], g.get("saved_amount", 0)) for g in user_data.get("financial_goals", []))
-        system_prompt = build_system_prompt(
-            user_data.get("first_name", ""),
-            user_data.get("partner_names", ""),
-            user_data.get("relationship_status", "single"),
-            user_data.get("tone_preference", "warm & encouraging"),
-            goals_tuple,
-            mood,
-            user_data.get("money_personality", ""),
-            user_data.get("risk_profile", "moderate"),
-            user_data.get("investment_timeline", "medium-term"),
-            user_data.get("conflict_patterns", "none")
-        )
-        messages.insert(0, {"role": "system", "content": system_prompt})
-
-    consent_ok, consent_response = check_micro_consent(user_input, user_data, intent)
-    if not consent_ok:
-        messages.append({"role": "assistant", "content": consent_response})
-        return consent_response, messages
-
-    conflict_terms = ['argue', 'fight', 'disagree', 'conflict', 'stress', 'frustrate']
-    empathy_text = get_conflict_empathy() + "\n\n" if any(term in user_input.lower() for term in conflict_terms) else ""
-    audio_ack = "(Received as a transcribed voice message.)\n\n" if is_audio else ""
-
-    messages.append({"role": "user", "content": user_input})
-    response_text = audio_ack + empathy_text + call_openai_chat(tuple((msg["role"], msg["content"]) for msg in messages[-3:]))
+    # Adjust pronouns for couples if needed
     response_text = adjust_pronouns(response_text, user_data.get("relationship_status", "single"))
 
+    # Append milestone message if applicable
     milestone_msg = check_milestones(user_data)
     if milestone_msg:
-        response_text += "\n\n" + milestone_msg
-    legal_note = get_legal_disclaimer(intent)
-    if legal_note:
-        response_text += "\n\n" + legal_note
+        response_text += f"\n\n{milestone_msg}"
 
+    # Append legal disclaimer if needed
+    legal_disclaimer = get_legal_disclaimer(intent)
+    if legal_disclaimer:
+        response_text += f"\n\n{legal_disclaimer}"
+
+    # Append assistant response to conversation history
     messages.append({"role": "assistant", "content": response_text})
+
+    # Prune conversation history again if needed
     messages = prune_conversation_history(messages)
+
     return response_text, messages
