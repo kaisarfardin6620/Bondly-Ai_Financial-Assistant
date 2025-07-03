@@ -228,7 +228,7 @@ def get_bondly_response(user_input: str, user_data: Dict, messages: List[Dict]) 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4o-turbo",
                 messages=chat_messages,
                 max_tokens=300,
                 temperature=0.75,
